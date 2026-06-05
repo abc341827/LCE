@@ -12,6 +12,24 @@ public static class MemoryInspector
     private const int ScanBufferSize = 1024 * 1024;
     private const int FallbackReadSize = 4096;
 
+    private sealed class ScanCounters
+    {
+        public long RegionsVisited { get; set; }
+
+        public long ScannableRegions { get; set; }
+
+        public long ReadSuccesses { get; set; }
+
+        public long ReadFailures { get; set; }
+
+        public long BytesRead { get; set; }
+
+        public override string ToString()
+        {
+            return $"区域 {RegionsVisited:N0}，可扫描 {ScannableRegions:N0}，读成功 {ReadSuccesses:N0}，读失败 {ReadFailures:N0}，读取 {BytesRead:N0} 字节";
+        }
+    }
+
     public static void CleanupTemporaryScanFiles()
     {
         var directory = GetScanDirectory();
@@ -89,12 +107,14 @@ public static class MemoryInspector
         using var processHandle = OpenReadableProcess(processId);
         NativeMethods.GetNativeSystemInfo(out var systemInfo);
 
+        var counters = new ScanCounters();
         var resultFilePath = CreateScanFilePath();
         using var resultStream = File.Create(resultFilePath);
         using var writer = new BinaryWriter(resultStream);
         long resultCount = 0;
         var address = systemInfo.MinimumApplicationAddress;
         var maximumAddress = systemInfo.MaximumApplicationAddress;
+        var pageSize = (nuint)systemInfo.PageSize;
         var informationSize = (nuint)Marshal.SizeOf<NativeMethods.MemoryBasicInformation>();
 
         while ((nuint)address < (nuint)maximumAddress)
@@ -102,8 +122,11 @@ public static class MemoryInspector
             var queryResult = NativeMethods.VirtualQueryEx(processHandle, address, out var information, informationSize);
             if (queryResult == 0)
             {
-                break;
+                address = AdvanceAddress((nuint)address, pageSize, (nuint)maximumAddress);
+                continue;
             }
+
+            counters.RegionsVisited++;
 
             var baseAddress = (nuint)information.BaseAddress;
             var regionSize = information.RegionSize;
@@ -111,7 +134,8 @@ public static class MemoryInspector
 
             if (IsScannableRegion(information.State, information.Protect, information.Type, privateReadWriteOnly))
             {
-                resultCount += ScanRegionForPattern(processHandle, baseAddress, regionSize, pattern, writer);
+                counters.ScannableRegions++;
+                resultCount += ScanRegionForPattern(processHandle, baseAddress, regionSize, pattern, writer, counters);
             }
 
             if (endAddress <= (nuint)address)
@@ -128,7 +152,7 @@ public static class MemoryInspector
             return FirstScan(processId, valueType, valueText, false);
         }
 
-        return new MemoryScanSession(processId, valueType, pattern.Length, resultFilePath, resultCount, privateReadWriteOnly);
+        return new MemoryScanSession(processId, valueType, pattern.Length, resultFilePath, resultCount, privateReadWriteOnly, counters.ToString());
     }
 
     public static MemoryScanSession FirstUnknownScan(int processId, ScanValueType valueType, bool privateReadWriteOnly)
@@ -138,12 +162,14 @@ public static class MemoryInspector
         using var processHandle = OpenReadableProcess(processId);
         NativeMethods.GetNativeSystemInfo(out var systemInfo);
 
+        var counters = new ScanCounters();
         var resultFilePath = CreateScanFilePath();
         using var resultStream = File.Create(resultFilePath);
         using var writer = new BinaryWriter(resultStream);
         long resultCount = 0;
         var address = systemInfo.MinimumApplicationAddress;
         var maximumAddress = systemInfo.MaximumApplicationAddress;
+        var pageSize = (nuint)systemInfo.PageSize;
         var informationSize = (nuint)Marshal.SizeOf<NativeMethods.MemoryBasicInformation>();
 
         while ((nuint)address < (nuint)maximumAddress)
@@ -151,8 +177,11 @@ public static class MemoryInspector
             var queryResult = NativeMethods.VirtualQueryEx(processHandle, address, out var information, informationSize);
             if (queryResult == 0)
             {
-                break;
+                address = AdvanceAddress((nuint)address, pageSize, (nuint)maximumAddress);
+                continue;
             }
+
+            counters.RegionsVisited++;
 
             var baseAddress = (nuint)information.BaseAddress;
             var regionSize = information.RegionSize;
@@ -160,7 +189,8 @@ public static class MemoryInspector
 
             if (IsScannableRegion(information.State, information.Protect, information.Type, privateReadWriteOnly))
             {
-                resultCount += ScanRegionForUnknownValues(processHandle, baseAddress, regionSize, valueType, valueByteLength, writer);
+                counters.ScannableRegions++;
+                resultCount += ScanRegionForUnknownValues(processHandle, baseAddress, regionSize, valueType, valueByteLength, writer, counters);
             }
 
             if (endAddress <= (nuint)address)
@@ -177,7 +207,7 @@ public static class MemoryInspector
             return FirstUnknownScan(processId, valueType, false);
         }
 
-        return new MemoryScanSession(processId, valueType, valueByteLength, resultFilePath, resultCount, privateReadWriteOnly);
+        return new MemoryScanSession(processId, valueType, valueByteLength, resultFilePath, resultCount, privateReadWriteOnly, counters.ToString());
     }
 
     public static MemoryScanSession NextScan(MemoryScanSession previousSession, ScanComparison comparison, string valueText)
@@ -220,7 +250,7 @@ public static class MemoryInspector
         }
 
         TryDeleteFile(previousSession.ResultFilePath);
-        return new MemoryScanSession(previousSession.ProcessId, previousSession.ValueType, previousSession.ValueByteLength, resultFilePath, resultCount, previousSession.UsedPrivateReadWriteOnly);
+        return new MemoryScanSession(previousSession.ProcessId, previousSession.ValueType, previousSession.ValueByteLength, resultFilePath, resultCount, previousSession.UsedPrivateReadWriteOnly, previousSession.Diagnostics);
     }
 
     public static IReadOnlyList<MemoryScanResult> ToResults(MemoryScanSession session, int maxPreviewResults = 10000)
@@ -311,7 +341,18 @@ public static class MemoryInspector
         }
     }
 
-    private static long ScanRegionForPattern(SafeProcessHandle processHandle, nuint baseAddress, nuint regionSize, byte[] pattern, BinaryWriter writer)
+    private static nint AdvanceAddress(nuint address, nuint bytes, nuint maximumAddress)
+    {
+        var nextAddress = address + bytes;
+        if (nextAddress <= address || nextAddress > maximumAddress)
+        {
+            nextAddress = maximumAddress;
+        }
+
+        return (nint)nextAddress;
+    }
+
+    private static long ScanRegionForPattern(SafeProcessHandle processHandle, nuint baseAddress, nuint regionSize, byte[] pattern, BinaryWriter writer, ScanCounters counters)
     {
         var readBuffer = new byte[ScanBufferSize];
         var carry = Array.Empty<byte>();
@@ -326,10 +367,14 @@ public static class MemoryInspector
 
             if (!TryReadMemoryBlock(processHandle, currentAddress, readBuffer, bytesToRead, out var bytesRead, out var advanceBytes))
             {
+                counters.ReadFailures++;
                 currentAddress += advanceBytes;
                 carry = Array.Empty<byte>();
                 continue;
             }
+
+            counters.ReadSuccesses++;
+            counters.BytesRead += (long)bytesRead;
 
             var bytesReadAsInt = checked((int)bytesRead);
             var combined = new byte[carry.Length + bytesReadAsInt];
@@ -357,7 +402,7 @@ public static class MemoryInspector
         return resultCount;
     }
 
-    private static long ScanRegionForUnknownValues(SafeProcessHandle processHandle, nuint baseAddress, nuint regionSize, ScanValueType valueType, int valueByteLength, BinaryWriter writer)
+    private static long ScanRegionForUnknownValues(SafeProcessHandle processHandle, nuint baseAddress, nuint regionSize, ScanValueType valueType, int valueByteLength, BinaryWriter writer, ScanCounters counters)
     {
         var readBuffer = new byte[ScanBufferSize];
         var currentAddress = baseAddress;
@@ -371,9 +416,13 @@ public static class MemoryInspector
 
             if (!TryReadMemoryBlock(processHandle, currentAddress, readBuffer, bytesToRead, out var bytesRead, out var advanceBytes) || bytesRead < (nuint)valueByteLength)
             {
+                counters.ReadFailures++;
                 currentAddress += advanceBytes;
                 continue;
             }
+
+            counters.ReadSuccesses++;
+            counters.BytesRead += (long)bytesRead;
 
             var bytesReadAsInt = checked((int)bytesRead);
             for (var index = 0; index <= bytesReadAsInt - valueByteLength; index += valueByteLength)

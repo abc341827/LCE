@@ -2,7 +2,7 @@ namespace LCE.Models;
 
 public sealed class MemoryScanSession
 {
-    public MemoryScanSession(int processId, ScanValueType valueType, int valueByteLength, string resultFilePath, long resultCount, bool usedPrivateReadWriteOnly)
+    public MemoryScanSession(int processId, ScanValueType valueType, int valueByteLength, string resultFilePath, long resultCount, bool usedPrivateReadWriteOnly, string diagnostics)
     {
         ProcessId = processId;
         ValueType = valueType;
@@ -10,6 +10,7 @@ public sealed class MemoryScanSession
         ResultFilePath = resultFilePath;
         ResultCount = resultCount;
         UsedPrivateReadWriteOnly = usedPrivateReadWriteOnly;
+        Diagnostics = diagnostics;
     }
 
     public int ProcessId { get; }
@@ -23,4 +24,6 @@ public sealed class MemoryScanSession
     public long ResultCount { get; }
 
     public bool UsedPrivateReadWriteOnly { get; }
+
+    public string Diagnostics { get; }
 }

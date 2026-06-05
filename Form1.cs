@@ -136,8 +136,8 @@ namespace LCE
                     ? "私有读写过滤无结果，已自动改为完整可读内存扫描。"
                     : string.Empty;
                 statusLabel.Text = scanSession.ResultCount == 0
-                    ? $"{scanKind} 首次扫描完成：找到 0 个结果。{scopeText}请尝试更换类型、关闭过滤或确认目标进程权限。"
-                    : $"{scanKind} 首次扫描完成：找到 {scanSession.ResultCount:N0} 个结果，表格仅预览前 10000 条。{scopeText}修改目标程序数值后可再次扫描。";
+                    ? $"{scanKind} 首次扫描完成：找到 0 个结果。{scopeText}{scanSession.Diagnostics}。请尝试更换类型、关闭过滤或确认目标进程权限。"
+                    : $"{scanKind} 首次扫描完成：找到 {scanSession.ResultCount:N0} 个结果，表格仅预览前 10000 条。{scopeText}{scanSession.Diagnostics}。修改目标程序数值后可再次扫描。";
             }
             catch (Exception ex) when (ex is Win32Exception or InvalidOperationException or OverflowException)
             {
