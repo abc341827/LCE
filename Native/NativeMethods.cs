@@ -6,6 +6,10 @@ namespace LCE.Native;
 
 internal static class NativeMethods
 {
+    internal const uint TokenAdjustPrivileges = 0x0020;
+    internal const uint TokenQuery = 0x0008;
+    internal const uint SePrivilegeEnabled = 0x00000002;
+
     internal const uint ProcessQueryInformation = 0x0400;
     internal const uint ProcessVmRead = 0x0010;
 
@@ -42,6 +46,21 @@ internal static class NativeMethods
     [DllImport("kernel32.dll")]
     internal static extern void GetNativeSystemInfo(out SystemInfo systemInfo);
 
+    [DllImport("kernel32.dll")]
+    internal static extern nint GetCurrentProcess();
+
+    [DllImport("advapi32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    internal static extern bool OpenProcessToken(nint processHandle, uint desiredAccess, out SafeAccessTokenHandle tokenHandle);
+
+    [DllImport("advapi32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    internal static extern bool LookupPrivilegeValue(string? systemName, string name, out Luid luid);
+
+    [DllImport("advapi32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    internal static extern bool AdjustTokenPrivileges(SafeAccessTokenHandle tokenHandle, [MarshalAs(UnmanagedType.Bool)] bool disableAllPrivileges, ref TokenPrivileges newState, uint bufferLength, nint previousState, nint returnLength);
+
     [StructLayout(LayoutKind.Sequential)]
     internal struct MemoryBasicInformation
     {
@@ -53,6 +72,27 @@ internal static class NativeMethods
         public uint State;
         public uint Protect;
         public uint Type;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    internal struct Luid
+    {
+        public uint LowPart;
+        public int HighPart;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    internal struct LuidAndAttributes
+    {
+        public Luid Luid;
+        public uint Attributes;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    internal struct TokenPrivileges
+    {
+        public uint PrivilegeCount;
+        public LuidAndAttributes Privileges;
     }
 
     [StructLayout(LayoutKind.Sequential)]
