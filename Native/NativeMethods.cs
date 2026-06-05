@@ -48,6 +48,7 @@ internal static class NativeMethods
         public nint BaseAddress;
         public nint AllocationBase;
         public uint AllocationProtect;
+        public ushort PartitionId;
         public nuint RegionSize;
         public uint State;
         public uint Protect;
