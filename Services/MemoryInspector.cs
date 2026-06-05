@@ -10,6 +10,7 @@ namespace LCE.Services;
 public static class MemoryInspector
 {
     private const int ScanBufferSize = 1024 * 1024;
+    private const int FallbackReadSize = 4096;
 
     public static void CleanupTemporaryScanFiles()
     {
@@ -323,9 +324,9 @@ public static class MemoryInspector
             var remaining = endAddress - currentAddress;
             var bytesToRead = remaining > ScanBufferSize ? (nuint)ScanBufferSize : remaining;
 
-            if (!NativeMethods.ReadProcessMemory(processHandle, (nint)currentAddress, readBuffer, bytesToRead, out var bytesRead) || bytesRead == 0)
+            if (!TryReadMemoryBlock(processHandle, currentAddress, readBuffer, bytesToRead, out var bytesRead, out var advanceBytes))
             {
-                currentAddress += bytesToRead;
+                currentAddress += advanceBytes;
                 carry = Array.Empty<byte>();
                 continue;
             }
@@ -368,9 +369,9 @@ public static class MemoryInspector
             var remaining = endAddress - currentAddress;
             var bytesToRead = remaining > ScanBufferSize ? (nuint)ScanBufferSize : remaining;
 
-            if (!NativeMethods.ReadProcessMemory(processHandle, (nint)currentAddress, readBuffer, bytesToRead, out var bytesRead) || bytesRead < (nuint)valueByteLength)
+            if (!TryReadMemoryBlock(processHandle, currentAddress, readBuffer, bytesToRead, out var bytesRead, out var advanceBytes) || bytesRead < (nuint)valueByteLength)
             {
-                currentAddress += bytesToRead;
+                currentAddress += advanceBytes;
                 continue;
             }
 
@@ -398,6 +399,28 @@ public static class MemoryInspector
     {
         return NativeMethods.ReadProcessMemory(processHandle, (nint)address, buffer, (nuint)buffer.Length, out var bytesRead)
             && bytesRead == (nuint)buffer.Length;
+    }
+
+    private static bool TryReadMemoryBlock(SafeProcessHandle processHandle, nuint address, byte[] buffer, nuint requestedBytes, out nuint bytesRead, out nuint advanceBytes)
+    {
+        if (NativeMethods.ReadProcessMemory(processHandle, (nint)address, buffer, requestedBytes, out bytesRead) && bytesRead > 0)
+        {
+            advanceBytes = bytesRead;
+            return true;
+        }
+
+        var fallbackBytes = requestedBytes > FallbackReadSize ? (nuint)FallbackReadSize : requestedBytes;
+        if (fallbackBytes != requestedBytes
+            && NativeMethods.ReadProcessMemory(processHandle, (nint)address, buffer, fallbackBytes, out bytesRead)
+            && bytesRead > 0)
+        {
+            advanceBytes = bytesRead;
+            return true;
+        }
+
+        bytesRead = 0;
+        advanceBytes = fallbackBytes == 0 ? 1 : fallbackBytes;
+        return false;
     }
 
     private static bool MatchesComparison(ScanValueType valueType, byte[] previousBytes, byte[] currentBytes, ScanComparison comparison, byte[]? comparisonBytes)
