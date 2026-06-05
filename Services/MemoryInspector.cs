@@ -121,7 +121,13 @@ public static class MemoryInspector
             address = (nint)endAddress;
         }
 
-        return new MemoryScanSession(processId, valueType, pattern.Length, resultFilePath, resultCount);
+        if (resultCount == 0 && privateReadWriteOnly)
+        {
+            TryDeleteFile(resultFilePath);
+            return FirstScan(processId, valueType, valueText, false);
+        }
+
+        return new MemoryScanSession(processId, valueType, pattern.Length, resultFilePath, resultCount, privateReadWriteOnly);
     }
 
     public static MemoryScanSession FirstUnknownScan(int processId, ScanValueType valueType, bool privateReadWriteOnly)
@@ -164,7 +170,13 @@ public static class MemoryInspector
             address = (nint)endAddress;
         }
 
-        return new MemoryScanSession(processId, valueType, valueByteLength, resultFilePath, resultCount);
+        if (resultCount == 0 && privateReadWriteOnly)
+        {
+            TryDeleteFile(resultFilePath);
+            return FirstUnknownScan(processId, valueType, false);
+        }
+
+        return new MemoryScanSession(processId, valueType, valueByteLength, resultFilePath, resultCount, privateReadWriteOnly);
     }
 
     public static MemoryScanSession NextScan(MemoryScanSession previousSession, ScanComparison comparison, string valueText)
@@ -207,7 +219,7 @@ public static class MemoryInspector
         }
 
         TryDeleteFile(previousSession.ResultFilePath);
-        return new MemoryScanSession(previousSession.ProcessId, previousSession.ValueType, previousSession.ValueByteLength, resultFilePath, resultCount);
+        return new MemoryScanSession(previousSession.ProcessId, previousSession.ValueType, previousSession.ValueByteLength, resultFilePath, resultCount, previousSession.UsedPrivateReadWriteOnly);
     }
 
     public static IReadOnlyList<MemoryScanResult> ToResults(MemoryScanSession session, int maxPreviewResults = 10000)
@@ -542,7 +554,11 @@ public static class MemoryInspector
         }
 
         var baseProtect = protect & 0xff;
-        return type == NativeMethods.MemPrivate && baseProtect == NativeMethods.PageReadwrite;
+        return type == NativeMethods.MemPrivate
+            && baseProtect is NativeMethods.PageReadwrite
+                or NativeMethods.PageWritecopy
+                or NativeMethods.PageExecuteReadwrite
+                or NativeMethods.PageExecuteWritecopy;
     }
 
     private static string FormatAddress(nuint address)
