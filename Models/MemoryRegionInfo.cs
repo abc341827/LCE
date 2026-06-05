@@ -10,9 +10,15 @@ public sealed class MemoryRegionInfo
 
     public required string State { get; init; }
 
+    public required string StateDescription { get; init; }
+
     public required string Protect { get; init; }
 
+    public required string ProtectDescription { get; init; }
+
     public required string Type { get; init; }
+
+    public required string TypeDescription { get; init; }
 
     public bool IsReadable { get; init; }
 }

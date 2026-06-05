@@ -1,4 +1,5 @@
 using System.Runtime.InteropServices;
+using System.Runtime.InteropServices;
 using Microsoft.Win32.SafeHandles;
 
 namespace LCE.Native;
@@ -33,6 +34,10 @@ internal static class NativeMethods
 
     [DllImport("kernel32.dll", SetLastError = true)]
     internal static extern nuint VirtualQueryEx(SafeProcessHandle processHandle, nint address, out MemoryBasicInformation buffer, nuint length);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    internal static extern bool ReadProcessMemory(SafeProcessHandle processHandle, nint baseAddress, byte[] buffer, nuint size, out nuint bytesRead);
 
     [DllImport("kernel32.dll")]
     internal static extern void GetNativeSystemInfo(out SystemInfo systemInfo);
