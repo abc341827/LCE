@@ -37,7 +37,7 @@ internal static class NativeMethods
 
     [DllImport("kernel32.dll", SetLastError = true)]
     [return: MarshalAs(UnmanagedType.Bool)]
-    internal static extern bool ReadProcessMemory(SafeProcessHandle processHandle, nint baseAddress, byte[] buffer, nuint size, out nuint bytesRead);
+    internal static extern bool ReadProcessMemory(SafeProcessHandle processHandle, nint baseAddress, byte[] buffer, UIntPtr size, out UIntPtr bytesRead);
 
     [DllImport("kernel32.dll")]
     internal static extern void GetNativeSystemInfo(out SystemInfo systemInfo);

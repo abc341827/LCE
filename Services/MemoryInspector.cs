@@ -24,9 +24,14 @@ public static class MemoryInspector
 
         public long BytesRead { get; set; }
 
+        public int LastReadErrorCode { get; set; }
+
         public override string ToString()
         {
-            return $"区域 {RegionsVisited:N0}，可扫描 {ScannableRegions:N0}，读成功 {ReadSuccesses:N0}，读失败 {ReadFailures:N0}，读取 {BytesRead:N0} 字节";
+            var errorText = LastReadErrorCode == 0
+                ? "无"
+                : $"{LastReadErrorCode}({new Win32Exception(LastReadErrorCode).Message})";
+            return $"区域 {RegionsVisited:N0}，可扫描 {ScannableRegions:N0}，读成功 {ReadSuccesses:N0}，读失败 {ReadFailures:N0}，读取 {BytesRead:N0} 字节，最后读取错误 {errorText}";
         }
     }
 
@@ -368,6 +373,7 @@ public static class MemoryInspector
             if (!TryReadMemoryBlock(processHandle, currentAddress, readBuffer, bytesToRead, out var bytesRead, out var advanceBytes))
             {
                 counters.ReadFailures++;
+                counters.LastReadErrorCode = Marshal.GetLastWin32Error();
                 currentAddress += advanceBytes;
                 carry = Array.Empty<byte>();
                 continue;
@@ -417,6 +423,7 @@ public static class MemoryInspector
             if (!TryReadMemoryBlock(processHandle, currentAddress, readBuffer, bytesToRead, out var bytesRead, out var advanceBytes) || bytesRead < (nuint)valueByteLength)
             {
                 counters.ReadFailures++;
+                counters.LastReadErrorCode = Marshal.GetLastWin32Error();
                 currentAddress += advanceBytes;
                 continue;
             }
@@ -446,23 +453,25 @@ public static class MemoryInspector
 
     private static bool ReadExact(SafeProcessHandle processHandle, nuint address, byte[] buffer)
     {
-        return NativeMethods.ReadProcessMemory(processHandle, (nint)address, buffer, (nuint)buffer.Length, out var bytesRead)
-            && bytesRead == (nuint)buffer.Length;
+        return NativeMethods.ReadProcessMemory(processHandle, (nint)address, buffer, new UIntPtr((uint)buffer.Length), out var bytesRead)
+            && bytesRead.ToUInt64() == (ulong)buffer.Length;
     }
 
     private static bool TryReadMemoryBlock(SafeProcessHandle processHandle, nuint address, byte[] buffer, nuint requestedBytes, out nuint bytesRead, out nuint advanceBytes)
     {
-        if (NativeMethods.ReadProcessMemory(processHandle, (nint)address, buffer, requestedBytes, out bytesRead) && bytesRead > 0)
+        if (NativeMethods.ReadProcessMemory(processHandle, (nint)address, buffer, new UIntPtr((ulong)requestedBytes), out var bytesReadValue) && bytesReadValue != UIntPtr.Zero)
         {
+            bytesRead = (nuint)bytesReadValue.ToUInt64();
             advanceBytes = bytesRead;
             return true;
         }
 
         var fallbackBytes = requestedBytes > FallbackReadSize ? (nuint)FallbackReadSize : requestedBytes;
         if (fallbackBytes != requestedBytes
-            && NativeMethods.ReadProcessMemory(processHandle, (nint)address, buffer, fallbackBytes, out bytesRead)
-            && bytesRead > 0)
+            && NativeMethods.ReadProcessMemory(processHandle, (nint)address, buffer, new UIntPtr((ulong)fallbackBytes), out bytesReadValue)
+            && bytesReadValue != UIntPtr.Zero)
         {
+            bytesRead = (nuint)bytesReadValue.ToUInt64();
             advanceBytes = bytesRead;
             return true;
         }
