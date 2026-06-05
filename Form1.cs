@@ -72,8 +72,7 @@ namespace LCE
         {
             var processes = Process.GetProcesses()
                 .Select(process => new ProcessSnapshot(process))
-                .OrderBy(process => process.Name)
-                .ThenBy(process => process.Id)
+                .OrderBy(process => process.Id)
                 .ToList();
 
             processGridView.DataSource = new BindingList<ProcessSnapshot>(processes);
