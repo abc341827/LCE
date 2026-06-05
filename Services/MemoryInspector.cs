@@ -11,6 +11,20 @@ public static class MemoryInspector
 {
     private const int ScanBufferSize = 1024 * 1024;
 
+    public static void CleanupTemporaryScanFiles()
+    {
+        var directory = GetScanDirectory();
+        if (!Directory.Exists(directory))
+        {
+            return;
+        }
+
+        foreach (var filePath in Directory.EnumerateFiles(directory, "scan_*.bin"))
+        {
+            TryDeleteFile(filePath);
+        }
+    }
+
     public static IReadOnlyList<MemoryRegionInfo> EnumerateMemoryRegions(int processId)
     {
         using var processHandle = NativeMethods.OpenProcess(
@@ -67,19 +81,22 @@ public static class MemoryInspector
         return regions;
     }
 
-    public static MemoryScanSession FirstScan(int processId, ScanValueType valueType, string valueText, int maxResults = 10000)
+    public static MemoryScanSession FirstScan(int processId, ScanValueType valueType, string valueText, bool privateReadWriteOnly)
     {
         var pattern = GetValueBytes(valueType, valueText);
 
         using var processHandle = OpenReadableProcess(processId);
         NativeMethods.GetNativeSystemInfo(out var systemInfo);
 
-        var candidates = new List<MemoryScanCandidate>();
+        var resultFilePath = CreateScanFilePath();
+        using var resultStream = File.Create(resultFilePath);
+        using var writer = new BinaryWriter(resultStream);
+        long resultCount = 0;
         var address = systemInfo.MinimumApplicationAddress;
         var maximumAddress = systemInfo.MaximumApplicationAddress;
         var informationSize = (nuint)Marshal.SizeOf<NativeMethods.MemoryBasicInformation>();
 
-        while ((nuint)address < (nuint)maximumAddress && candidates.Count < maxResults)
+        while ((nuint)address < (nuint)maximumAddress)
         {
             var queryResult = NativeMethods.VirtualQueryEx(processHandle, address, out var information, informationSize);
             if (queryResult == 0)
@@ -91,9 +108,9 @@ public static class MemoryInspector
             var regionSize = information.RegionSize;
             var endAddress = baseAddress + regionSize;
 
-            if (IsReadable(information.State, information.Protect))
+            if (IsScannableRegion(information.State, information.Protect, information.Type, privateReadWriteOnly))
             {
-                ScanRegionForPattern(processHandle, baseAddress, regionSize, information.Protect, valueType, pattern, maxResults, candidates);
+                resultCount += ScanRegionForPattern(processHandle, baseAddress, regionSize, pattern, writer);
             }
 
             if (endAddress <= (nuint)address)
@@ -104,10 +121,53 @@ public static class MemoryInspector
             address = (nint)endAddress;
         }
 
-        return new MemoryScanSession(processId, valueType, pattern.Length, candidates);
+        return new MemoryScanSession(processId, valueType, pattern.Length, resultFilePath, resultCount);
     }
 
-    public static MemoryScanSession NextScan(MemoryScanSession previousSession, ScanComparison comparison, string valueText, int maxResults = 10000)
+    public static MemoryScanSession FirstUnknownScan(int processId, ScanValueType valueType, bool privateReadWriteOnly)
+    {
+        var valueByteLength = GetValueByteLength(valueType);
+
+        using var processHandle = OpenReadableProcess(processId);
+        NativeMethods.GetNativeSystemInfo(out var systemInfo);
+
+        var resultFilePath = CreateScanFilePath();
+        using var resultStream = File.Create(resultFilePath);
+        using var writer = new BinaryWriter(resultStream);
+        long resultCount = 0;
+        var address = systemInfo.MinimumApplicationAddress;
+        var maximumAddress = systemInfo.MaximumApplicationAddress;
+        var informationSize = (nuint)Marshal.SizeOf<NativeMethods.MemoryBasicInformation>();
+
+        while ((nuint)address < (nuint)maximumAddress)
+        {
+            var queryResult = NativeMethods.VirtualQueryEx(processHandle, address, out var information, informationSize);
+            if (queryResult == 0)
+            {
+                break;
+            }
+
+            var baseAddress = (nuint)information.BaseAddress;
+            var regionSize = information.RegionSize;
+            var endAddress = baseAddress + regionSize;
+
+            if (IsScannableRegion(information.State, information.Protect, information.Type, privateReadWriteOnly))
+            {
+                resultCount += ScanRegionForUnknownValues(processHandle, baseAddress, regionSize, valueType, valueByteLength, writer);
+            }
+
+            if (endAddress <= (nuint)address)
+            {
+                break;
+            }
+
+            address = (nint)endAddress;
+        }
+
+        return new MemoryScanSession(processId, valueType, valueByteLength, resultFilePath, resultCount);
+    }
+
+    public static MemoryScanSession NextScan(MemoryScanSession previousSession, ScanComparison comparison, string valueText)
     {
         byte[]? comparisonBytes = null;
         if (comparison == ScanComparison.EqualToValue)
@@ -120,61 +180,58 @@ public static class MemoryInspector
         }
 
         using var processHandle = OpenReadableProcess(previousSession.ProcessId);
-        var candidates = new List<MemoryScanCandidate>();
+        var resultFilePath = CreateScanFilePath();
+        long resultCount = 0;
 
-        foreach (var candidate in previousSession.Candidates)
+        using (var inputStream = File.OpenRead(previousSession.ResultFilePath))
+        using (var reader = new BinaryReader(inputStream))
+        using (var outputStream = File.Create(resultFilePath))
+        using (var writer = new BinaryWriter(outputStream))
         {
-            if (candidates.Count >= maxResults)
+            while (TryReadRecord(reader, previousSession.ValueByteLength, out var candidateAddress, out var previousBytes))
             {
-                break;
-            }
+                var currentBytes = new byte[previousSession.ValueByteLength];
+                if (!ReadExact(processHandle, candidateAddress, currentBytes))
+                {
+                    continue;
+                }
 
-            var currentBytes = new byte[previousSession.ValueByteLength];
-            if (!ReadExact(processHandle, candidate.Address, currentBytes))
-            {
-                continue;
-            }
+                if (!MatchesComparison(previousSession.ValueType, previousBytes, currentBytes, comparison, comparisonBytes))
+                {
+                    continue;
+                }
 
-            if (!MatchesComparison(previousSession.ValueType, candidate.PreviousBytes, currentBytes, comparison, comparisonBytes))
-            {
-                continue;
+                WriteRecord(writer, candidateAddress, currentBytes);
+                resultCount++;
             }
+        }
 
-            var currentValue = FormatValue(previousSession.ValueType, currentBytes);
-            candidates.Add(new MemoryScanCandidate
+        TryDeleteFile(previousSession.ResultFilePath);
+        return new MemoryScanSession(previousSession.ProcessId, previousSession.ValueType, previousSession.ValueByteLength, resultFilePath, resultCount);
+    }
+
+    public static IReadOnlyList<MemoryScanResult> ToResults(MemoryScanSession session, int maxPreviewResults = 10000)
+    {
+        var results = new List<MemoryScanResult>();
+        using var inputStream = File.OpenRead(session.ResultFilePath);
+        using var reader = new BinaryReader(inputStream);
+
+        while (results.Count < maxPreviewResults && TryReadRecord(reader, session.ValueByteLength, out var address, out var valueBytes))
+        {
+            results.Add(new MemoryScanResult
             {
-                Address = candidate.Address,
-                PreviousBytes = currentBytes,
-                PreviousValue = candidate.CurrentValue,
-                CurrentValue = currentValue,
-                RegionBaseAddress = candidate.RegionBaseAddress,
-                RegionSize = candidate.RegionSize,
-                Protect = candidate.Protect
+                Address = FormatAddress(address),
+                Value = FormatValue(session.ValueType, valueBytes),
+                ValueType = FormatValueType(session.ValueType)
             });
         }
 
-        return new MemoryScanSession(previousSession.ProcessId, previousSession.ValueType, previousSession.ValueByteLength, candidates);
+        return results;
     }
 
-    public static IReadOnlyList<MemoryScanResult> ToResults(MemoryScanSession session)
+    public static IReadOnlyList<MemoryScanResult> ScanInt32(int processId, int value)
     {
-        return session.Candidates
-            .Select(candidate => new MemoryScanResult
-            {
-                Address = FormatAddress(candidate.Address),
-                Value = candidate.CurrentValue,
-                PreviousValue = candidate.PreviousValue,
-                ValueType = FormatValueType(session.ValueType),
-                RegionBaseAddress = candidate.RegionBaseAddress,
-                RegionSize = candidate.RegionSize,
-                Protect = candidate.Protect
-            })
-            .ToList();
-    }
-
-    public static IReadOnlyList<MemoryScanResult> ScanInt32(int processId, int value, int maxResults = 10000)
-    {
-        var session = FirstScan(processId, ScanValueType.Int32, value.ToString(), maxResults);
+        var session = FirstScan(processId, ScanValueType.Int32, value.ToString(), false);
         return ToResults(session);
     }
 
@@ -193,14 +250,63 @@ public static class MemoryInspector
         return processHandle;
     }
 
-    private static void ScanRegionForPattern(SafeProcessHandle processHandle, nuint baseAddress, nuint regionSize, uint protect, ScanValueType valueType, byte[] pattern, int maxResults, List<MemoryScanCandidate> candidates)
+    private static string CreateScanFilePath()
+    {
+        var directory = GetScanDirectory();
+        Directory.CreateDirectory(directory);
+        return Path.Combine(directory, $"scan_{Guid.NewGuid():N}.bin");
+    }
+
+    private static string GetScanDirectory()
+    {
+        return Path.Combine(Path.GetTempPath(), "LCE", "Scans");
+    }
+
+    private static void WriteRecord(BinaryWriter writer, nuint address, byte[] valueBytes)
+    {
+        writer.Write((ulong)address);
+        writer.Write(valueBytes);
+    }
+
+    private static bool TryReadRecord(BinaryReader reader, int valueByteLength, out nuint address, out byte[] valueBytes)
+    {
+        address = 0;
+        valueBytes = Array.Empty<byte>();
+
+        var recordLength = sizeof(ulong) + valueByteLength;
+        if (reader.BaseStream.Length - reader.BaseStream.Position < recordLength)
+        {
+            return false;
+        }
+
+        address = (nuint)reader.ReadUInt64();
+        valueBytes = reader.ReadBytes(valueByteLength);
+        return valueBytes.Length == valueByteLength;
+    }
+
+    private static void TryDeleteFile(string filePath)
+    {
+        try
+        {
+            if (File.Exists(filePath))
+            {
+                File.Delete(filePath);
+            }
+        }
+        catch
+        {
+        }
+    }
+
+    private static long ScanRegionForPattern(SafeProcessHandle processHandle, nuint baseAddress, nuint regionSize, byte[] pattern, BinaryWriter writer)
     {
         var readBuffer = new byte[ScanBufferSize];
         var carry = Array.Empty<byte>();
         var currentAddress = baseAddress;
         var endAddress = baseAddress + regionSize;
+        long resultCount = 0;
 
-        while (currentAddress < endAddress && candidates.Count < maxResults)
+        while (currentAddress < endAddress)
         {
             var remaining = endAddress - currentAddress;
             var bytesToRead = remaining > ScanBufferSize ? (nuint)ScanBufferSize : remaining;
@@ -217,7 +323,7 @@ public static class MemoryInspector
             Buffer.BlockCopy(carry, 0, combined, 0, carry.Length);
             Buffer.BlockCopy(readBuffer, 0, combined, carry.Length, bytesReadAsInt);
 
-            for (var index = 0; index <= combined.Length - pattern.Length && candidates.Count < maxResults; index++)
+            for (var index = 0; index <= combined.Length - pattern.Length; index++)
             {
                 if (index + pattern.Length <= carry.Length || !BytesEqual(combined, index, pattern))
                 {
@@ -225,16 +331,8 @@ public static class MemoryInspector
                 }
 
                 var matchAddress = currentAddress - (nuint)carry.Length + (nuint)index;
-                candidates.Add(new MemoryScanCandidate
-                {
-                    Address = matchAddress,
-                    PreviousBytes = pattern.ToArray(),
-                    PreviousValue = string.Empty,
-                    CurrentValue = FormatValue(valueType, pattern),
-                    RegionBaseAddress = FormatAddress(baseAddress),
-                    RegionSize = FormatSize(regionSize),
-                    Protect = FormatProtect(protect)
-                });
+                WriteRecord(writer, matchAddress, pattern);
+                resultCount++;
             }
 
             var carryLength = Math.Min(pattern.Length - 1, bytesReadAsInt);
@@ -242,6 +340,46 @@ public static class MemoryInspector
             Buffer.BlockCopy(readBuffer, bytesReadAsInt - carryLength, carry, 0, carryLength);
             currentAddress += bytesRead;
         }
+
+        return resultCount;
+    }
+
+    private static long ScanRegionForUnknownValues(SafeProcessHandle processHandle, nuint baseAddress, nuint regionSize, ScanValueType valueType, int valueByteLength, BinaryWriter writer)
+    {
+        var readBuffer = new byte[ScanBufferSize];
+        var currentAddress = baseAddress;
+        var endAddress = baseAddress + regionSize;
+        long resultCount = 0;
+
+        while (currentAddress < endAddress)
+        {
+            var remaining = endAddress - currentAddress;
+            var bytesToRead = remaining > ScanBufferSize ? (nuint)ScanBufferSize : remaining;
+
+            if (!NativeMethods.ReadProcessMemory(processHandle, (nint)currentAddress, readBuffer, bytesToRead, out var bytesRead) || bytesRead < (nuint)valueByteLength)
+            {
+                currentAddress += bytesToRead;
+                continue;
+            }
+
+            var bytesReadAsInt = checked((int)bytesRead);
+            for (var index = 0; index <= bytesReadAsInt - valueByteLength; index += valueByteLength)
+            {
+                var valueBytes = new byte[valueByteLength];
+                Buffer.BlockCopy(readBuffer, index, valueBytes, 0, valueByteLength);
+                if (!IsUsefulUnknownValue(valueType, valueBytes))
+                {
+                    continue;
+                }
+
+                WriteRecord(writer, currentAddress + (nuint)index, valueBytes);
+                resultCount++;
+            }
+
+            currentAddress += bytesRead;
+        }
+
+        return resultCount;
     }
 
     private static bool ReadExact(SafeProcessHandle processHandle, nuint address, byte[] buffer)
@@ -255,6 +393,7 @@ public static class MemoryInspector
         return comparison switch
         {
             ScanComparison.EqualToValue => comparisonBytes is not null && BytesEqual(currentBytes, 0, comparisonBytes),
+            ScanComparison.Changed => !BytesEqual(currentBytes, 0, previousBytes),
             ScanComparison.Unchanged => BytesEqual(currentBytes, 0, previousBytes),
             ScanComparison.Increased => CompareNumeric(valueType, currentBytes, previousBytes) > 0,
             ScanComparison.Decreased => CompareNumeric(valueType, currentBytes, previousBytes) < 0,
@@ -321,6 +460,28 @@ public static class MemoryInspector
         };
     }
 
+    private static int GetValueByteLength(ScanValueType valueType)
+    {
+        return valueType switch
+        {
+            ScanValueType.Int32 => sizeof(int),
+            ScanValueType.Float => sizeof(float),
+            ScanValueType.Double => sizeof(double),
+            ScanValueType.StringUtf8 or ScanValueType.StringUtf16 => throw new InvalidOperationException("字符串不支持未知初始值扫描，请输入明确字符串后首次扫描。"),
+            _ => throw new InvalidOperationException("未知扫描类型。")
+        };
+    }
+
+    private static bool IsUsefulUnknownValue(ScanValueType valueType, byte[] bytes)
+    {
+        return valueType switch
+        {
+            ScanValueType.Float => !float.IsNaN(BitConverter.ToSingle(bytes)) && !float.IsInfinity(BitConverter.ToSingle(bytes)),
+            ScanValueType.Double => !double.IsNaN(BitConverter.ToDouble(bytes)) && !double.IsInfinity(BitConverter.ToDouble(bytes)),
+            _ => true
+        };
+    }
+
     private static string FormatValue(ScanValueType valueType, byte[] bytes)
     {
         return valueType switch
@@ -366,6 +527,22 @@ public static class MemoryInspector
             or NativeMethods.PageExecuteRead
             or NativeMethods.PageExecuteReadwrite
             or NativeMethods.PageExecuteWritecopy;
+    }
+
+    private static bool IsScannableRegion(uint state, uint protect, uint type, bool privateReadWriteOnly)
+    {
+        if (!IsReadable(state, protect))
+        {
+            return false;
+        }
+
+        if (!privateReadWriteOnly)
+        {
+            return true;
+        }
+
+        var baseProtect = protect & 0xff;
+        return type == NativeMethods.MemPrivate && baseProtect == NativeMethods.PageReadwrite;
     }
 
     private static string FormatAddress(nuint address)

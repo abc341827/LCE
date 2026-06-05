@@ -2,12 +2,13 @@ namespace LCE.Models;
 
 public sealed class MemoryScanSession
 {
-    public MemoryScanSession(int processId, ScanValueType valueType, int valueByteLength, IReadOnlyList<MemoryScanCandidate> candidates)
+    public MemoryScanSession(int processId, ScanValueType valueType, int valueByteLength, string resultFilePath, long resultCount)
     {
         ProcessId = processId;
         ValueType = valueType;
         ValueByteLength = valueByteLength;
-        Candidates = candidates.ToList();
+        ResultFilePath = resultFilePath;
+        ResultCount = resultCount;
     }
 
     public int ProcessId { get; }
@@ -16,5 +17,7 @@ public sealed class MemoryScanSession
 
     public int ValueByteLength { get; }
 
-    public List<MemoryScanCandidate> Candidates { get; }
+    public string ResultFilePath { get; }
+
+    public long ResultCount { get; }
 }

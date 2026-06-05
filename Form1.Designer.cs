@@ -40,6 +40,8 @@
             scanHeaderPanel = new Panel();
             scanIntButton = new Button();
             nextScanButton = new Button();
+            unknownInitialValueCheckBox = new CheckBox();
+            privateReadWriteOnlyCheckBox = new CheckBox();
             scanComparisonComboBox = new ComboBox();
             scanComparisonLabel = new Label();
             scanValueTextBox = new TextBox();
@@ -186,6 +188,8 @@
             // 
             scanHeaderPanel.Controls.Add(scanIntButton);
             scanHeaderPanel.Controls.Add(nextScanButton);
+            scanHeaderPanel.Controls.Add(unknownInitialValueCheckBox);
+            scanHeaderPanel.Controls.Add(privateReadWriteOnlyCheckBox);
             scanHeaderPanel.Controls.Add(scanComparisonComboBox);
             scanHeaderPanel.Controls.Add(scanComparisonLabel);
             scanHeaderPanel.Controls.Add(scanValueTextBox);
@@ -218,6 +222,28 @@
             nextScanButton.Text = "再次扫描";
             nextScanButton.UseVisualStyleBackColor = true;
             nextScanButton.Click += nextScanButton_Click;
+            // 
+            // unknownInitialValueCheckBox
+            // 
+            unknownInitialValueCheckBox.AutoSize = true;
+            unknownInitialValueCheckBox.Location = new Point(586, 10);
+            unknownInitialValueCheckBox.Name = "unknownInitialValueCheckBox";
+            unknownInitialValueCheckBox.Size = new Size(87, 21);
+            unknownInitialValueCheckBox.TabIndex = 9;
+            unknownInitialValueCheckBox.Text = "未知初始值";
+            unknownInitialValueCheckBox.UseVisualStyleBackColor = true;
+            // 
+            // privateReadWriteOnlyCheckBox
+            // 
+            privateReadWriteOnlyCheckBox.AutoSize = true;
+            privateReadWriteOnlyCheckBox.Checked = true;
+            privateReadWriteOnlyCheckBox.CheckState = CheckState.Checked;
+            privateReadWriteOnlyCheckBox.Location = new Point(271, 40);
+            privateReadWriteOnlyCheckBox.Name = "privateReadWriteOnlyCheckBox";
+            privateReadWriteOnlyCheckBox.Size = new Size(123, 21);
+            privateReadWriteOnlyCheckBox.TabIndex = 10;
+            privateReadWriteOnlyCheckBox.Text = "只扫私有读写内存";
+            privateReadWriteOnlyCheckBox.UseVisualStyleBackColor = true;
             // 
             // scanComparisonComboBox
             // 
@@ -348,6 +374,8 @@
         private Panel scanHeaderPanel;
         private Button scanIntButton;
         private Button nextScanButton;
+        private CheckBox unknownInitialValueCheckBox;
+        private CheckBox privateReadWriteOnlyCheckBox;
         private ComboBox scanComparisonComboBox;
         private Label scanComparisonLabel;
         private TextBox scanValueTextBox;

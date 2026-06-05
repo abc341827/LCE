@@ -110,6 +110,7 @@ namespace LCE
             scanComparisonComboBox.Items.AddRange(new object[]
             {
                 "等于输入值",
+                "变化了",
                 "变大",
                 "变小",
                 "未变"
@@ -126,9 +127,12 @@ namespace LCE
                 statusLabel.Text = $"正在首次扫描 {process.Name} ({process.Id})...";
                 Application.DoEvents();
 
-                scanSession = MemoryInspector.FirstScan(process.Id, valueType, scanValueTextBox.Text);
+                scanSession = unknownInitialValueCheckBox.Checked
+                    ? MemoryInspector.FirstUnknownScan(process.Id, valueType, privateReadWriteOnlyCheckBox.Checked)
+                    : MemoryInspector.FirstScan(process.Id, valueType, scanValueTextBox.Text, privateReadWriteOnlyCheckBox.Checked);
                 BindScanResults(scanSession);
-                statusLabel.Text = $"首次扫描完成：找到 {scanSession.Candidates.Count} 个结果。修改目标程序数值后可进行再次扫描。";
+                var scanKind = unknownInitialValueCheckBox.Checked ? "未知初始值" : "精确值";
+                statusLabel.Text = $"{scanKind} 首次扫描完成：找到 {scanSession.ResultCount:N0} 个结果，表格仅预览前 10000 条。修改目标程序数值后可再次扫描。";
             }
             catch (Exception ex) when (ex is Win32Exception or InvalidOperationException or OverflowException)
             {
@@ -153,7 +157,7 @@ namespace LCE
 
                 scanSession = MemoryInspector.NextScan(scanSession!, comparison, scanValueTextBox.Text);
                 BindScanResults(scanSession);
-                statusLabel.Text = $"再次扫描完成：剩余 {scanSession.Candidates.Count} 个结果。";
+                statusLabel.Text = $"再次扫描完成：剩余 {scanSession.ResultCount:N0} 个结果，表格仅预览前 10000 条。";
             }
             catch (Exception ex) when (ex is Win32Exception or InvalidOperationException or OverflowException)
             {
@@ -190,9 +194,10 @@ namespace LCE
             return scanComparisonComboBox.SelectedIndex switch
             {
                 0 => ScanComparison.EqualToValue,
-                1 => ScanComparison.Increased,
-                2 => ScanComparison.Decreased,
-                3 => ScanComparison.Unchanged,
+                1 => ScanComparison.Changed,
+                2 => ScanComparison.Increased,
+                3 => ScanComparison.Decreased,
+                4 => ScanComparison.Unchanged,
                 _ => ScanComparison.EqualToValue
             };
         }
